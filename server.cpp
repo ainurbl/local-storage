@@ -147,6 +147,53 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+
+
+class TFileWriter {
+public:
+    TFileWriter(uint64_t maxBatchSize, const std::string &path, bool appending_mode, bool flushing) : PATH(path),
+                                                                                       MAX_BATCH_SIZE(maxBatchSize),
+                                                                                       APPEND(appending_mode),
+                                                                                       FLUSH(flushing){
+        init();
+    }
+
+    void write(const std::string &str) {
+        out << str;
+        if (FLUSH) out.flush();
+        last_cnt += 1;
+        if (last_cnt == MAX_BATCH_SIZE) {
+            out.close();
+            last_cnt = 0;
+            last_id += 1;
+            init();
+        }
+    }
+
+    void close() {
+
+    }
+
+    void clear() {}
+
+private:
+    void init() {
+        if (APPEND) {
+            out.open(PATH + std::to_string(last_id), std::ios_base::out | std::ios_base::app);
+        } else {
+            out.open(PATH + std::to_string(last_id), std::ios_base::out | std::ios_base::trunc);
+        }
+    }
+
+    int last_id = 0;
+    int last_cnt = 0;
+    const std::string PATH;
+    const uint64_t MAX_BATCH_SIZE;
+    const bool APPEND;
+    const bool FLUSH;
+    std::ofstream out;
+};
+
 class TConcurrentHashMap {
 public:
     using TTable = std::unordered_map<std::string, uint64_t>;
@@ -157,21 +204,19 @@ public:
                     std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_TIME_MS));
                     if (cold_start_going) continue;
                     std::lock_guard<std::mutex> g(mutex);
-                    cout_batch.open(batch_drop_path, std::ios_base::out | std::ios_base::trunc);
                     for (auto &x: storage) {
-                        cout_batch << x.first << " " << x.second << "\n";
+                        batcher.write(x.first + " " + std::to_string(x.second) + "\n");
                     }
-                    cout_batch.close();
-                    clearFile(log_path);
+                    batcher.close();
+                    logger.clear();
                 }
             }
     ) {
         tryToColdStart();
-        cout_log.open(log_path, std::ios_base::out | std::ios_base::app);
     }
 
     ~TConcurrentHashMap() {
-        table_logger.detach();
+        table_logger.join();
     }
 
     bool find(const std::string &key, uint64_t &val) {
@@ -189,52 +234,26 @@ public:
     }
 
 private:
-    const uint64_t SLEEP_TIME_MS = 1000;
+    const uint64_t SLEEP_TIME_MS = 5'000;
+    TFileWriter logger{500'000, "log_", true, true};
+    TFileWriter batcher{500'000, "batch_", false, false};
     mutable std::mutex mutex;
-    std::ofstream cout_log;
-    std::ofstream cout_batch;
-    std::string log_path = "log.txt";
-    std::string batch_drop_path = "batch.txt";
     TTable storage;
     bool cold_start_going = true;
     std::thread table_logger;
 
     void addPut(const std::string &key, uint64_t val) {
         std::lock_guard<std::mutex> g(mutex);
-        cout_log << key + " " + std::to_string(val) + "\n";
-        cout_log.flush();
-    }
-
-    void clearFile(const std::string &path) {
-        std::ofstream cout;
-        cout.open(path, std::ios_base::out | std::ios_base::trunc);
-        cout.close();
+        logger.write(key + " " + std::to_string(val) + "\n");
     }
 
     void tryToColdStart() {
-        std::ifstream cin_batch;
-        std::ifstream cin_log;
-        cin_batch.open(batch_drop_path);
-        cin_log.open(log_path);
-        std::cout << "start cold start" << std::endl;
-        std::string key;
-        uint64_t val;
-        uint64_t cnt = 0;
-        while (cin_batch >> key >> val) {
-            storage[key] = val;
-            cnt += 1;
-        }
-        std::ofstream add_logs;
-        add_logs.open(log_path, std::ios_base::out | std::ios_base::app);
-        while (cin_log >> key >> val) {
-            storage[key] = val;
-            add_logs << key + " " + std::to_string(val) + "\n";
-            cnt += 1;
-        }
-        add_logs.close();
-        clearFile(log_path);
-        std::cout << "read " << cnt << " records" << std::endl;
+        auto start_time = std::chrono::steady_clock::now();
 
+
+        auto end_time = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << elapsed_ms.count() << " ms\n";
         cold_start_going = false;
     }
 };
