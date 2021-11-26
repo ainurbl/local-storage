@@ -158,8 +158,14 @@ public:
                     if (cold_start_going) continue;
                     std::lock_guard<std::mutex> g(mutex);
                     cout_batch.open(batch_drop_path, std::ios_base::out | std::ios_base::trunc);
+                    int64_t cnt = 0;
                     for (auto &x: storage) {
                         cout_batch << x.first << " " << x.second << "\n";
+                        cnt += 1;
+                        if (cnt % FLUSHING_CNT_THRESHOLD == 0) {
+                            cnt = 0;
+                        cout_batch.flush();
+                        }
                     }
                     cout_batch.close();
                     clearFile(log_path);
@@ -189,7 +195,8 @@ public:
     }
 
 private:
-    const uint64_t SLEEP_TIME_MS = 1000;
+    const uint64_t SLEEP_TIME_MS = 10'000;
+    const uint64_t FLUSHING_CNT_THRESHOLD = 500'000;
     mutable std::mutex mutex;
     std::ofstream cout_log;
     std::ofstream cout_batch;
@@ -212,6 +219,7 @@ private:
     }
 
     void tryToColdStart() {
+        auto start_time = std::chrono::steady_clock::now();
         std::ifstream cin_batch;
         std::ifstream cin_log;
         cin_batch.open(batch_drop_path);
@@ -234,7 +242,9 @@ private:
         add_logs.close();
         clearFile(log_path);
         std::cout << "read " << cnt << " records" << std::endl;
-
+        auto end_time = std::chrono::steady_clock::now();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << elapsed_ms.count() << " ms\n";
         cold_start_going = false;
     }
 };
