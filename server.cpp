@@ -6,8 +6,11 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <csignal>
 #include <sstream>
 #include <string>
+#include <fstream>
+#include <thread>
 #include <unordered_map>
 
 #include <errno.h>
@@ -18,8 +21,6 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <thread>
-#include <fstream>
 
 static_assert(EAGAIN == EWOULDBLOCK);
 
@@ -31,226 +32,249 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-    constexpr int max_events = 32;
+constexpr int max_events = 32;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-    auto create_and_bind(std::string const &port) {
-        struct addrinfo hints;
+auto create_and_bind(std::string const &port) {
+    struct addrinfo hints;
 
-        memset(&hints, 0, sizeof(struct addrinfo));
-        hints.ai_family = AF_UNSPEC; /* Return IPv4 and IPv6 choices */
-        hints.ai_socktype = SOCK_STREAM; /* TCP */
-        hints.ai_flags = AI_PASSIVE; /* All interfaces */
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC; /* Return IPv4 and IPv6 choices */
+    hints.ai_socktype = SOCK_STREAM; /* TCP */
+    hints.ai_flags = AI_PASSIVE; /* All interfaces */
 
-        struct addrinfo *result;
-        int sockt = getaddrinfo(nullptr, port.c_str(), &hints, &result);
-        if (sockt != 0) {
-            LOG_ERROR("getaddrinfo failed");
-            return -1;
-        }
-
-        struct addrinfo *rp = nullptr;
-        int socketfd = 0;
-        for (rp = result; rp != nullptr; rp = rp->ai_next) {
-            socketfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-            if (socketfd == -1) {
-                continue;
-            }
-
-            sockt = bind(socketfd, rp->ai_addr, rp->ai_addrlen);
-            if (sockt == 0) {
-                break;
-            }
-
-            close(socketfd);
-        }
-
-        if (rp == nullptr) {
-            LOG_ERROR("bind failed");
-            return -1;
-        }
-
-        freeaddrinfo(result);
-
-        return socketfd;
+    struct addrinfo *result;
+    int sockt = getaddrinfo(nullptr, port.c_str(), &hints, &result);
+    if (sockt != 0) {
+        LOG_ERROR("getaddrinfo failed");
+        return -1;
     }
 
-////////////////////////////////////////////////////////////////////////////////
-
-    auto make_socket_nonblocking(int socketfd) {
-        int flags = fcntl(socketfd, F_GETFL, 0);
-        if (flags == -1) {
-            LOG_ERROR("fcntl failed (F_GETFL)");
-            return false;
+    struct addrinfo *rp = nullptr;
+    int socketfd = 0;
+    for (rp = result; rp != nullptr; rp = rp->ai_next) {
+        socketfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (socketfd == -1) {
+            continue;
         }
 
-        flags |= O_NONBLOCK;
-        int s = fcntl(socketfd, F_SETFL, flags);
-        if (s == -1) {
-            LOG_ERROR("fcntl failed (F_SETFL)");
-            return false;
+        sockt = bind(socketfd, rp->ai_addr, rp->ai_addrlen);
+        if (sockt == 0) {
+            break;
         }
 
-        return true;
+        close(socketfd);
     }
 
+    if (rp == nullptr) {
+        LOG_ERROR("bind failed");
+        return -1;
+    }
+
+    freeaddrinfo(result);
+
+    return socketfd;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
-    SocketStatePtr accept_connection(
-            int socketfd,
-            struct epoll_event &event,
-            int epollfd) {
-        struct sockaddr in_addr;
-        socklen_t in_len = sizeof(in_addr);
-        int infd = accept(socketfd, &in_addr, &in_len);
-        if (infd == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return nullptr;
-            } else {
-                LOG_ERROR("accept failed");
-                return nullptr;
-            }
-        }
+auto make_socket_nonblocking(int socketfd) {
+    int flags = fcntl(socketfd, F_GETFL, 0);
+    if (flags == -1) {
+        LOG_ERROR("fcntl failed (F_GETFL)");
+        return false;
+    }
 
-        std::string hbuf(NI_MAXHOST, '\0');
-        std::string sbuf(NI_MAXSERV, '\0');
-        auto ret = getnameinfo(
-                &in_addr, in_len,
-                const_cast<char *>(hbuf.data()), hbuf.size(),
-                const_cast<char *>(sbuf.data()), sbuf.size(),
-                NI_NUMERICHOST | NI_NUMERICSERV);
+    flags |= O_NONBLOCK;
+    int s = fcntl(socketfd, F_SETFL, flags);
+    if (s == -1) {
+        LOG_ERROR("fcntl failed (F_SETFL)");
+        return false;
+    }
 
-        if (ret == 0) {
-            LOG_INFO_S("accepted connection on fd " << infd
-                                                    << "(host=" << hbuf << ", port=" << sbuf << ")");
-        }
+    return true;
+}
 
-        if (!make_socket_nonblocking(infd)) {
-            LOG_ERROR("make_socket_nonblocking failed");
+////////////////////////////////////////////////////////////////////////////////
+
+SocketStatePtr accept_connection(
+        int socketfd,
+        struct epoll_event &event,
+        int epollfd) {
+    struct sockaddr in_addr;
+    socklen_t in_len = sizeof(in_addr);
+    int infd = accept(socketfd, &in_addr, &in_len);
+    if (infd == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return nullptr;
+        } else {
+            LOG_ERROR("accept failed");
             return nullptr;
         }
-
-        event.data.fd = infd;
-        event.events = EPOLLIN | EPOLLOUT | EPOLLET;
-        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, infd, &event) == -1) {
-            LOG_ERROR("epoll_ctl failed");
-            return nullptr;
-        }
-
-        auto state = std::make_shared<SocketState>();
-        state->fd = infd;
-        return state;
     }
+
+    std::string hbuf(NI_MAXHOST, '\0');
+    std::string sbuf(NI_MAXSERV, '\0');
+    auto ret = getnameinfo(
+            &in_addr, in_len,
+            const_cast<char *>(hbuf.data()), hbuf.size(),
+            const_cast<char *>(sbuf.data()), sbuf.size(),
+            NI_NUMERICHOST | NI_NUMERICSERV);
+
+    if (ret == 0) {
+        LOG_INFO_S("accepted connection on fd " << infd
+                                                << "(host=" << hbuf << ", port=" << sbuf << ")");
+    }
+
+    if (!make_socket_nonblocking(infd)) {
+        LOG_ERROR("make_socket_nonblocking failed");
+        return nullptr;
+    }
+
+    event.data.fd = infd;
+    event.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, infd, &event) == -1) {
+        LOG_ERROR("epoll_ctl failed");
+        return nullptr;
+    }
+
+    auto state = std::make_shared<SocketState>();
+    state->fd = infd;
+    return state;
+}
 
 }   // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class TConcurrentHashMap {
+constexpr uint64_t PARTITION_COUNT = 16; // must be power of 2
+constexpr uint64_t PARTITION_SIZE = UINT64_MAX / PARTITION_COUNT;
+constexpr uint64_t P = 239;
+
+volatile std::sig_atomic_t running = 1;
+
+inline uint64_t Hash(const std::string &str) {
+    uint64_t res = 0;
+    for (const auto &ch: str) {
+        res += ch;
+        res *= P;
+    }
+    return res;
+}
+
+inline uint64_t Hash(std::string &&str) {
+    uint64_t res = 0;
+    for (auto &&ch: str) {
+        res *= P;
+        res += (uint64_t)
+        ch;
+    }
+    return res;
+}
+
+inline uint64_t GetPartitionId(uint64_t val) {
+    return val / PARTITION_SIZE;
+}
+
+class TFileHashMap {
 public:
-    using TTable = std::unordered_map<std::string, uint64_t>;
-
-    TConcurrentHashMap() : table_logger(
-            [&]() {
-                while (true) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_TIME_MS));
-                    if (cold_start_going) continue;
-                    std::lock_guard<std::mutex> g(mutex);
-                    cout_batch.open(batch_drop_path, std::ios_base::out | std::ios_base::trunc);
-                    int64_t cnt = 0;
-                    for (auto &x: storage) {
-                        cout_batch << x.first << " " << x.second << "\n";
-                        cnt += 1;
-                        if (cnt % FLUSHING_CNT_THRESHOLD == 0) {
-                            cnt = 0;
-                        cout_batch.flush();
-                        }
-                    }
-                    cout_batch.close();
-                    clearFile(log_path);
-                }
-            }
-    ) {
-        tryToColdStart();
-        cout_log.open(log_path, std::ios_base::out | std::ios_base::app);
-    }
-
-    ~TConcurrentHashMap() {
-        table_logger.detach();
-    }
-
-    bool find(const std::string &key, uint64_t &val) {
-        auto it = storage.find(key);
-        if (it != storage.end()) {
-            val = it->second;
-            return true;
+    explicit TFileHashMap(const std::string &fileNameTemplate, uint64_t id) {
+        std::string key;
+        uint64_t value;
+        In.open(fileNameTemplate + std::to_string(id), std::ios_base::in);
+        while (In >> key >> value) {
+            Storage[key] = value;
         }
-        return false;
+        In.close();
+        Out.open(fileNameTemplate + std::to_string(id), std::ios_base::out | std::ios_base::trunc);
+        for (auto &entry: Storage) {
+            Out << entry.first << " " << entry.second << " ";
+        }
     }
 
-    void put(const std::string &key, uint64_t val) {
-        addPut(key, val);
-        storage[key] = val;
+    void Put(const std::string &key, uint64_t value) {
+        Storage[key] = value;
+        Out << key << " " << value << "\n";
+    }
+
+    bool Find(const std::string &key, uint64_t *value) {
+        if (Storage.find(key) == Storage.end()) {
+            return false;
+        }
+        *value = Storage[key];
+        return true;
+    }
+
+    uint64_t Size() {
+        return Storage.size();
+    }
+
+    void Flush() {
+        Out.flush();
+    }
+
+    void Close() {
+        Out.close();
     }
 
 private:
-    const uint64_t SLEEP_TIME_MS = 10'000;
-    const uint64_t FLUSHING_CNT_THRESHOLD = 500'000;
-    mutable std::mutex mutex;
-    std::ofstream cout_log;
-    std::ofstream cout_batch;
-    std::string log_path = "log.txt";
-    std::string batch_drop_path = "batch.txt";
-    TTable storage;
-    bool cold_start_going = true;
-    std::thread table_logger;
-
-    void addPut(const std::string &key, uint64_t val) {
-        std::lock_guard<std::mutex> g(mutex);
-        cout_log << key + " " + std::to_string(val) + "\n";
-        cout_log.flush();
-    }
-
-    void clearFile(const std::string &path) {
-        std::ofstream cout;
-        cout.open(path, std::ios_base::out | std::ios_base::trunc);
-        cout.close();
-    }
-
-    void tryToColdStart() {
-        auto start_time = std::chrono::steady_clock::now();
-        std::ifstream cin_batch;
-        std::ifstream cin_log;
-        cin_batch.open(batch_drop_path);
-        cin_log.open(log_path);
-        std::cout << "start cold start" << std::endl;
-        std::string key;
-        uint64_t val;
-        uint64_t cnt = 0;
-        while (cin_batch >> key >> val) {
-            storage[key] = val;
-            cnt += 1;
-        }
-        std::ofstream add_logs;
-        add_logs.open(log_path, std::ios_base::out | std::ios_base::app);
-        while (cin_log >> key >> val) {
-            storage[key] = val;
-            add_logs << key + " " + std::to_string(val) + "\n";
-            cnt += 1;
-        }
-        add_logs.close();
-        clearFile(log_path);
-        std::cout << "read " << cnt << " records" << std::endl;
-        auto end_time = std::chrono::steady_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << elapsed_ms.count() << " ms\n";
-        cold_start_going = false;
-    }
+    std::unordered_map<std::string, uint64_t> Storage;
+    std::ifstream In;
+    std::ofstream Out;
 };
 
+class TConcurrentHashMap {
+public:
+    explicit TConcurrentHashMap() {
+        uint64_t total = 0;
+        for (uint64_t i = 0; i < PARTITION_COUNT; ++i) {
+            Maps.emplace_back(MAP_NAME_TEMPLATE, i);
+            auto lastSize = Maps[i].Size();
+            total += lastSize;
+            LOG_INFO(std::to_string(lastSize) + " elements got from cold start at shard_id=" + std::to_string(i));
+        }
+        LOG_INFO("Total: " + std::to_string(total) + " elements");
+    }
+
+    ~TConcurrentHashMap() {
+        uint64_t totalSize = 0;
+        for (uint64_t i = 0; i < PARTITION_COUNT; ++i) {
+            Maps[i].Flush();
+            Maps[i].Close();
+            totalSize += Maps[i].Size();
+        }
+        LOG_INFO("Before destructor: " + std::to_string(totalSize) + " elements");
+    }
+
+    void Put(const std::string &key, uint64_t value) {
+        Maps[GetId(key)].Put(key, value);
+    }
+
+    bool Find(const std::string &key, uint64_t *value) {
+        return Maps[GetId(key)].Find(key, value);
+    }
+
+private:
+    uint64_t GetId(const std::string &key) {
+        return GetPartitionId(Hash(key));
+    }
+
+    uint64_t GetId(std::string &&key) {
+        return GetPartitionId(Hash(key));
+    }
+
+    std::string MAP_NAME_TEMPLATE = "bin_map_";
+    std::vector<TFileHashMap> Maps;
+};
+
+void signal_handler(int) {
+    running = 0;
+}
 
 int main(int argc, const char **argv) {
+    signal(SIGINT, signal_handler);
+
     if (argc < 2) {
         return 1;
     }
@@ -308,7 +332,7 @@ int main(int argc, const char **argv) {
         get_response.set_request_id(get_request.request_id());
 
         uint64_t offset;
-        if (concurrentHashMap.find(get_request.key(), offset)) {
+        if (concurrentHashMap.Find(get_request.key(), &offset)) {
             get_response.set_offset(offset);
         }
 
@@ -329,7 +353,7 @@ int main(int argc, const char **argv) {
 
         LOG_DEBUG_S("put_request: " << put_request.ShortDebugString());
 
-        concurrentHashMap.put(put_request.key(), put_request.offset());
+        concurrentHashMap.Put(put_request.key(), put_request.offset());
 
         NProto::TPutResponse put_response;
         put_response.set_request_id(put_request.request_id());
@@ -370,7 +394,7 @@ int main(int argc, const char **argv) {
         states.erase(fd);
     };
 
-    while (true) {
+    while (running) {
         const auto n = epoll_wait(epollfd, events.data(), ::max_events, -1);
 
         {

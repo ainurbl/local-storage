@@ -43,7 +43,6 @@ int main(int argc, const char** argv) {
     if (argc < 3) {
         return 1;
     }
-    auto start_time = std::chrono::steady_clock::now();
 
     const auto port = atoi(argv[1]);
     const auto max_requests = atoi(argv[2]);
@@ -258,9 +257,6 @@ int main(int argc, const char** argv) {
     }
 
     close(socketfd);
-    auto end_time = std::chrono::steady_clock::now();
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    std::cout << elapsed_ms.count() << " ms\n";
 
     return 0;
 }
