@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #include <sys/epoll.h>
@@ -150,7 +151,7 @@ SocketStatePtr accept_connection(
 
 constexpr uint64_t PARTITION_COUNT = 16; // must be power of 2
 constexpr uint64_t PARTITION_SIZE = UINT64_MAX / PARTITION_COUNT;
-constexpr uint64_t P = 239;
+constexpr uint64_t P = 53;
 
 volatile std::sig_atomic_t running = 1;
 
@@ -265,12 +266,53 @@ private:
     }
 
     std::string MAP_NAME_TEMPLATE = "bin_map_";
+
     std::vector<TFileHashMap> Maps;
 };
 
 void signal_handler(int) {
     running = 0;
 }
+
+class TKeyValueStorage {
+public:
+    explicit TKeyValueStorage() {
+        f = fopen("values.bin", "ab+");
+    }
+    ~TKeyValueStorage() {
+        fclose(f);
+    }
+
+    void Put(const std::string &key, const std::string &value) {
+        uint64_t sz = value.size();
+        uint64_t offset = ftell(f);
+        fwrite(&sz, sizeof(uint64_t), 1, f);
+        fwrite(value.c_str(), sizeof(char), sz, f);
+        Map.Put(key, offset);
+    }
+
+    bool Get(const std::string &key, std::string *value) {
+        uint64_t offset = 0;
+        if (Map.Find(key, &offset)) {
+            *value = ReadValue(offset);
+            return true;
+        }
+        return false;
+    }
+private:
+    std::string ReadValue(uint64_t offset) {
+        fseek(f, offset, SEEK_SET);
+        uint64_t sz;
+        fread(&sz, sizeof(uint64_t), 1, f);
+        std::string ret(sz, 0);
+        fread(&ret[0], sizeof(char), sz, f);
+        fseek(f, 0, SEEK_END);
+        return ret;
+    }
+
+    FILE *f;
+    TConcurrentHashMap Map;
+};
 
 int main(int argc, const char **argv) {
     signal(SIGINT, signal_handler);
@@ -317,6 +359,7 @@ int main(int argc, const char **argv) {
      */
 
     TConcurrentHashMap concurrentHashMap;
+    TKeyValueStorage db;
 
     auto handle_get = [&](const std::string &request) {
         NProto::TGetRequest get_request;
@@ -365,12 +408,40 @@ int main(int argc, const char **argv) {
         return response.str();
     };
 
+    auto handle_insert = [&](const std::string &request) {
+        NProto::TInsertRequest insert_request;
+        if (!insert_request.ParseFromArray(request.data(), request.size())) {
+            // TODO proper handling
+
+            abort();
+        }
+
+        LOG_DEBUG_S("insert_request: " << insert_request.ShortDebugString());
+
+        db.Put(insert_request.key(), insert_request.val());
+
+        std::string check;
+        assert(db.Get(insert_request.key(), &check));
+        assert(check == insert_request.val());
+
+        NProto::TInsertResponse insert_response;
+        insert_response.set_request_id(insert_request.request_id());
+
+        std::stringstream response;
+        serialize_header(INSERT_RESPONSE, insert_response.ByteSizeLong(), response);
+        insert_response.SerializeToOstream(&response);
+
+        return response.str();
+    };
+
     Handler handler = [&](char request_type, const std::string &request) {
         switch (request_type) {
             case PUT_REQUEST:
                 return handle_put(request);
             case GET_REQUEST:
                 return handle_get(request);
+            case INSERT_REQUEST:
+                return handle_insert(request);
         }
 
         // TODO proper handling

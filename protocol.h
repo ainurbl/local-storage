@@ -14,6 +14,8 @@ constexpr char PUT_REQUEST = 1U;
 constexpr char PUT_RESPONSE = 2U;
 constexpr char GET_REQUEST = 3U;
 constexpr char GET_RESPONSE = 4U;
+constexpr char INSERT_REQUEST = 5U;
+constexpr char INSERT_RESPONSE = 6U;
 
 struct Message
 {

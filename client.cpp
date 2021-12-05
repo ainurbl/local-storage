@@ -107,6 +107,10 @@ int main(int argc, const char** argv) {
         return i * 4;
     };
 
+    auto generate_string = [] (int i) {
+        return std::to_string(i) + std::string(1000, 'z');
+    };
+
     uint64_t request_count = 0;
 
     auto stage_put = [&] () {
@@ -147,9 +151,28 @@ int main(int argc, const char** argv) {
         }
     };
 
+    auto stage_insert = [&] () {
+        for (int i = 0; i < max_requests; ++i) {
+            std::stringstream key;
+            key << "key" << i;
+
+            NProto::TInsertRequest insert_request;
+            insert_request.set_request_id(request_count++);
+            insert_request.set_key(key.str());
+            insert_request.set_val(generate_string(i));
+
+            std::stringstream message;
+            serialize_header(INSERT_REQUEST, insert_request.ByteSizeLong(), message);
+            insert_request.SerializeToOstream(&message);
+
+            state.output_queue.push_back(message.str());
+        }
+    };
+
     std::unordered_map<std::string, std::function<void()>> stage2func = {
         {"put", stage_put},
         {"get", stage_get},
+        {"insert", stage_insert},
     };
 
     for (const auto& stage: stages) {
@@ -203,10 +226,26 @@ int main(int argc, const char** argv) {
         return std::string();
     };
 
+    auto handle_insert = [&] (const std::string& response) {
+        NProto::TInsertResponse insert_response;
+        if (!insert_response.ParseFromArray(response.data(), response.size())) {
+            // TODO proper handling
+
+            abort();
+        }
+
+        LOG_DEBUG_S("insert_response: " << insert_response.ShortDebugString());
+
+        ++response_count;
+
+        return std::string();
+    };
+
     Handler handler = [&] (char message_type, const std::string& response) {
         switch (message_type) {
             case PUT_RESPONSE: return handle_put(response);
             case GET_RESPONSE: return handle_get(response);
+            case INSERT_RESPONSE: return handle_insert(response);
         }
 
         // TODO proper handling
