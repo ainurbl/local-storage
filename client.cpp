@@ -43,7 +43,6 @@ int main(int argc, const char** argv) {
     if (argc < 3) {
         return 1;
     }
-
     const auto port = atoi(argv[1]);
     const auto max_requests = atoi(argv[2]);
     std::vector<std::string> stages;
@@ -99,84 +98,103 @@ int main(int argc, const char** argv) {
     SocketState state;
     state.fd = socketfd;
 
-    /*
-     * generating requests
-     */
-
-    auto generate_data = [] (int i) {
-        return i * 4;
-    };
-
-    auto generate_string = [] (int i) {
-        return std::to_string(i) + std::string(1000, 'z');
-    };
-
     uint64_t request_count = 0;
+    std::unordered_map <uint64_t, uint64_t> expected_gets;
 
-    auto stage_put = [&] () {
-        for (int i = 0; i < max_requests; ++i) {
-            std::stringstream key;
-            key << "key" << i;
-
-            NProto::TPutRequest put_request;
-            put_request.set_request_id(request_count++);
-            put_request.set_key(key.str());
-            put_request.set_offset(generate_data(i));
+    if (std::strcmp(argv[2], "get_inserted") == 0) {
+        if (argc < 4) {
+            LOG_ERROR("failed get_inserted request: format is ./client [PORT] get_inserted [KEY1] [KEY2] ...");
+            return 1;
+        }
+        for (int i = 3; i < argc; ++i) {
+            NProto::TGetInsertedRequest get_inserted_request;
+            get_inserted_request.set_request_id(request_count++);
+            get_inserted_request.set_key(argv[i]);
 
             std::stringstream message;
-            serialize_header(PUT_REQUEST, put_request.ByteSizeLong(), message);
-            put_request.SerializeToOstream(&message);
+            serialize_header(GET_INSERTED_REQUEST, get_inserted_request.ByteSizeLong(), message);
+            get_inserted_request.SerializeToOstream(&message);
 
             state.output_queue.push_back(message.str());
         }
-    };
 
-    std::unordered_map<uint64_t, uint64_t> expected_gets;
+    } else {
 
-    auto stage_get = [&] () {
-        for (int i = 0; i < max_requests; ++i) {
-            std::stringstream key;
-            key << "key" << i;
+        /*
+         * generating requests
+         */
 
-            NProto::TGetRequest get_request;
-            get_request.set_request_id(request_count++);
-            get_request.set_key(key.str());
-            expected_gets[get_request.request_id()] = generate_data(i);
+        auto generate_data = [](int i) {
+            return i * 4;
+        };
 
-            std::stringstream message;
-            serialize_header(GET_REQUEST, get_request.ByteSizeLong(), message);
-            get_request.SerializeToOstream(&message);
+        auto generate_string = [](int i) {
+            return std::to_string(i) + std::string(1000, 'z');
+        };
 
-            state.output_queue.push_back(message.str());
+        auto stage_put = [&]() {
+            for (int i = 0; i < max_requests; ++i) {
+                std::stringstream key;
+                key << "key" << i;
+
+                NProto::TPutRequest put_request;
+                put_request.set_request_id(request_count++);
+                put_request.set_key(key.str());
+                put_request.set_offset(generate_data(i));
+
+                std::stringstream message;
+                serialize_header(PUT_REQUEST, put_request.ByteSizeLong(), message);
+                put_request.SerializeToOstream(&message);
+
+                state.output_queue.push_back(message.str());
+            }
+        };
+
+        auto stage_get = [&]() {
+            for (int i = 0; i < max_requests; ++i) {
+                std::stringstream key;
+                key << "key" << i;
+
+                NProto::TGetRequest get_request;
+                get_request.set_request_id(request_count++);
+                get_request.set_key(key.str());
+                expected_gets[get_request.request_id()] = generate_data(i);
+
+                std::stringstream message;
+                serialize_header(GET_REQUEST, get_request.ByteSizeLong(), message);
+                get_request.SerializeToOstream(&message);
+
+                state.output_queue.push_back(message.str());
+            }
+        };
+
+        auto stage_insert = [&]() {
+            for (int i = 0; i < max_requests; ++i) {
+                std::stringstream key;
+                key << "key" << i;
+
+                NProto::TInsertRequest insert_request;
+                insert_request.set_request_id(request_count++);
+                insert_request.set_key(key.str());
+                insert_request.set_val(generate_string(i));
+
+                std::stringstream message;
+                serialize_header(INSERT_REQUEST, insert_request.ByteSizeLong(), message);
+                insert_request.SerializeToOstream(&message);
+
+                state.output_queue.push_back(message.str());
+            }
+        };
+
+        std::unordered_map <std::string, std::function<void()>> stage2func = {
+                {"put",    stage_put},
+                {"get",    stage_get},
+                {"insert", stage_insert},
+        };
+
+        for (const auto &stage: stages) {
+            stage2func.at(stage)();
         }
-    };
-
-    auto stage_insert = [&] () {
-        for (int i = 0; i < max_requests; ++i) {
-            std::stringstream key;
-            key << "key" << i;
-
-            NProto::TInsertRequest insert_request;
-            insert_request.set_request_id(request_count++);
-            insert_request.set_key(key.str());
-            insert_request.set_val(generate_string(i));
-
-            std::stringstream message;
-            serialize_header(INSERT_REQUEST, insert_request.ByteSizeLong(), message);
-            insert_request.SerializeToOstream(&message);
-
-            state.output_queue.push_back(message.str());
-        }
-    };
-
-    std::unordered_map<std::string, std::function<void()>> stage2func = {
-        {"put", stage_put},
-        {"get", stage_get},
-        {"insert", stage_insert},
-    };
-
-    for (const auto& stage: stages) {
-        stage2func.at(stage)();
     }
 
     /*
@@ -184,6 +202,23 @@ int main(int argc, const char** argv) {
      */
 
     int response_count = 0;
+
+    auto handle_get_inserted = [&] (const std::string& response) {
+        NProto::TGetInsertedResponse get_inserted_response;
+        if (!get_inserted_response.ParseFromArray(response.data(), response.size())) {
+            // TODO proper handling
+
+            abort();
+        }
+
+        LOG_DEBUG_S("get_inserted_response: " << get_inserted_response.ShortDebugString());
+
+        std::cout << get_inserted_response.value() << std::endl;
+
+        ++response_count;
+
+        return std::string();
+    };
 
     auto handle_get = [&] (const std::string& response) {
         NProto::TGetResponse get_response;
@@ -246,6 +281,7 @@ int main(int argc, const char** argv) {
             case PUT_RESPONSE: return handle_put(response);
             case GET_RESPONSE: return handle_get(response);
             case INSERT_RESPONSE: return handle_insert(response);
+            case GET_INSERTED_RESPONSE: return handle_get_inserted(response);
         }
 
         // TODO proper handling

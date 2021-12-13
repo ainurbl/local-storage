@@ -279,6 +279,7 @@ public:
     explicit TKeyValueStorage() {
         f = fopen("values.bin", "ab+");
     }
+
     ~TKeyValueStorage() {
         fclose(f);
     }
@@ -358,55 +359,55 @@ int main(int argc, const char **argv) {
      * handler function
      */
 
-    TConcurrentHashMap concurrentHashMap;
+//    TConcurrentHashMap concurrentHashMap;
     TKeyValueStorage db;
 
-    auto handle_get = [&](const std::string &request) {
-        NProto::TGetRequest get_request;
-        if (!get_request.ParseFromArray(request.data(), request.size())) {
-            // TODO proper handling
-
-            abort();
-        }
-
-        LOG_DEBUG_S("get_request: " << get_request.ShortDebugString());
-
-        NProto::TGetResponse get_response;
-        get_response.set_request_id(get_request.request_id());
-
-        uint64_t offset;
-        if (concurrentHashMap.Find(get_request.key(), &offset)) {
-            get_response.set_offset(offset);
-        }
-
-        std::stringstream response;
-        serialize_header(GET_RESPONSE, get_response.ByteSizeLong(), response);
-        get_response.SerializeToOstream(&response);
-
-        return response.str();
-    };
-
-    auto handle_put = [&](const std::string &request) {
-        NProto::TPutRequest put_request;
-        if (!put_request.ParseFromArray(request.data(), request.size())) {
-            // TODO proper handling
-
-            abort();
-        }
-
-        LOG_DEBUG_S("put_request: " << put_request.ShortDebugString());
-
-        concurrentHashMap.Put(put_request.key(), put_request.offset());
-
-        NProto::TPutResponse put_response;
-        put_response.set_request_id(put_request.request_id());
-
-        std::stringstream response;
-        serialize_header(PUT_RESPONSE, put_response.ByteSizeLong(), response);
-        put_response.SerializeToOstream(&response);
-
-        return response.str();
-    };
+//    auto handle_get = [&](const std::string &request) {
+//        NProto::TGetRequest get_request;
+//        if (!get_request.ParseFromArray(request.data(), request.size())) {
+//            // TODO proper handling
+//
+//            abort();
+//        }
+//
+//        LOG_DEBUG_S("get_request: " << get_request.ShortDebugString());
+//
+//        NProto::TGetResponse get_response;
+//        get_response.set_request_id(get_request.request_id());
+//
+//        uint64_t offset;
+//        if (concurrentHashMap.Find(get_request.key(), &offset)) {
+//            get_response.set_offset(offset);
+//        }
+//
+//        std::stringstream response;
+//        serialize_header(GET_RESPONSE, get_response.ByteSizeLong(), response);
+//        get_response.SerializeToOstream(&response);
+//
+//        return response.str();
+//    };
+//
+//    auto handle_put = [&](const std::string &request) {
+//        NProto::TPutRequest put_request;
+//        if (!put_request.ParseFromArray(request.data(), request.size())) {
+//            // TODO proper handling
+//
+//            abort();
+//        }
+//
+//        LOG_DEBUG_S("put_request: " << put_request.ShortDebugString());
+//
+//        concurrentHashMap.Put(put_request.key(), put_request.offset());
+//
+//        NProto::TPutResponse put_response;
+//        put_response.set_request_id(put_request.request_id());
+//
+//        std::stringstream response;
+//        serialize_header(PUT_RESPONSE, put_response.ByteSizeLong(), response);
+//        put_response.SerializeToOstream(&response);
+//
+//        return response.str();
+//    };
 
     auto handle_insert = [&](const std::string &request) {
         NProto::TInsertRequest insert_request;
@@ -420,10 +421,6 @@ int main(int argc, const char **argv) {
 
         db.Put(insert_request.key(), insert_request.val());
 
-        std::string check;
-        assert(db.Get(insert_request.key(), &check));
-        assert(check == insert_request.val());
-
         NProto::TInsertResponse insert_response;
         insert_response.set_request_id(insert_request.request_id());
 
@@ -434,14 +431,41 @@ int main(int argc, const char **argv) {
         return response.str();
     };
 
+    auto handle_get_inserted = [&](const std::string &request) {
+        NProto::TGetInsertedRequest get_inserted_request;
+        if (!get_inserted_request.ParseFromArray(request.data(), request.size())) {
+            // TODO proper handling
+
+            abort();
+        }
+
+        LOG_DEBUG_S("get_inserted_request: " << get_inserted_request.ShortDebugString());
+
+        NProto::TGetInsertedResponse get_inserted_response;
+        get_inserted_response.set_request_id(get_inserted_request.request_id());
+
+        std::string value;
+        if (db.Get(get_inserted_request.key(), &value)) {
+            get_inserted_response.set_value(value);
+        }
+
+        std::stringstream response;
+        serialize_header(GET_INSERTED_RESPONSE, get_inserted_response.ByteSizeLong(), response);
+        get_inserted_response.SerializeToOstream(&response);
+
+        return response.str();
+    };
+
     Handler handler = [&](char request_type, const std::string &request) {
         switch (request_type) {
-            case PUT_REQUEST:
-                return handle_put(request);
-            case GET_REQUEST:
-                return handle_get(request);
+//            case PUT_REQUEST:
+//                return handle_put(request);
+//            case GET_REQUEST:
+//                return handle_get(request);
             case INSERT_REQUEST:
                 return handle_insert(request);
+            case GET_INSERTED_REQUEST:
+                return handle_get_inserted(request);
         }
 
         // TODO proper handling
