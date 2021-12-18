@@ -152,7 +152,7 @@ namespace {
 ////////////////////////////////////////////////////////////////////////////////
 
 constexpr uint64_t
-PARTITION_COUNT = 1; // must be power of 2
+PARTITION_COUNT = 16; // must be power of 2
 constexpr uint64_t
 PARTITION_SIZE = UINT64_MAX / PARTITION_COUNT;
 constexpr uint64_t
@@ -223,7 +223,6 @@ public:
                 }
                 Out[newOutId].close();
                 CurrentOutId = newOutId;
-                std::lock_guard<std::mutex> lock(Mutex);
                 int32_t oldOutId = CurrentOutId ^ 1;
                 Out[oldOutId].close();
                 Out[oldOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(oldOutId),
@@ -266,7 +265,6 @@ private:
     std::ofstream Out[2];
     int32_t CurrentOutId;
     int32_t PartitionId;
-    std::mutex Mutex;
     std::thread Flusher;
 };
 
