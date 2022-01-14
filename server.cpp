@@ -152,7 +152,7 @@ namespace {
 ////////////////////////////////////////////////////////////////////////////////
 
 constexpr uint64_t
-PARTITION_COUNT = 16; // must be power of 2
+PARTITION_COUNT = 1; // must be power of 2
 constexpr uint64_t
 PARTITION_SIZE = UINT64_MAX / PARTITION_COUNT;
 constexpr uint64_t
@@ -194,25 +194,43 @@ public:
         CurrentOutId = 0;
         std::string key;
         uint64_t value;
-        In.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId), std::ios_base::in);
+        In.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId),
+                std::ios_base::in);
         if (In >> key >> value) {
             Storage[key] = value;
         } else {
             CurrentOutId ^= 1;
             In.close();
-            In.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId), std::ios_base::in);
+            In.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId),
+                    std::ios_base::in);
         }
         while (In >> key >> value) {
             Storage[key] = value;
         }
         In.close();
+
+        LogPutsIn.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId) + "_log",
+                std::ios_base::in);
+        while (LogPutsIn >> key >> value) {
+            Storage[key] = value;
+        }
+        LogPutsIn.close();
+
+        LogOut[CurrentOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId) + "_log",
+                               std::ios_base::out | std::ios_base::trunc);
+        LogOut[CurrentOutId ^ 1].open(
+                fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId ^ 1) + "_log",
+                std::ios_base::out | std::ios_base::trunc);
+
         Out[CurrentOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId),
                                std::ios_base::out | std::ios_base::trunc);
-        Out[CurrentOutId ^ 1].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId ^ 1),
-                                   std::ios_base::out | std::ios_base::trunc);
+        Out[CurrentOutId ^ 1].open(
+                fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId ^ 1),
+                std::ios_base::out | std::ios_base::trunc);
         for (auto &entry: Storage) {
             Out[CurrentOutId] << entry.first << " " << entry.second << " ";
         }
+
         Flusher = std::thread([&]() {
             while (running) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2000));
@@ -224,6 +242,11 @@ public:
                 Out[newOutId].close();
                 CurrentOutId = newOutId;
                 int32_t oldOutId = CurrentOutId ^ 1;
+
+                LogOut[oldOutId].close();
+                LogOut[oldOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(oldOutId) + "_log",
+                                   std::ios_base::out | std::ios_base::trunc);
+
                 Out[oldOutId].close();
                 Out[oldOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(oldOutId),
                                    std::ios_base::out | std::ios_base::trunc);
@@ -233,7 +256,8 @@ public:
 
     void Put(const std::string &key, uint64_t value) {
         Storage[key] = value;
-        Out[CurrentOutId] << key << " " << value << "\n";
+        LogOut[CurrentOutId] << key << " " << value << "\n";
+        LogOut[CurrentOutId].flush();
     }
 
     bool Find(const std::string &key, uint64_t *value) {
@@ -248,21 +272,23 @@ public:
         return Storage.size();
     }
 
-    void Flush() {
-        Flusher.join();
-        Out[0].flush();
-        Out[1].flush();
-    }
-
     void Close() {
         Out[0].close();
         Out[1].close();
+        LogOut[0].flush();
+        LogOut[1].flush();
     }
 
+    void Flush() {
+        Flusher.join();
+        Close();
+    }
 private:
     std::unordered_map <std::string, uint64_t> Storage;
     std::ifstream In;
+    std::ifstream LogPutsIn;
     std::ofstream Out[2];
+    std::ofstream LogOut[2];
     int32_t CurrentOutId;
     int32_t PartitionId;
     std::thread Flusher;
@@ -313,10 +339,6 @@ private:
     TFileHashMap Maps[PARTITION_COUNT];
 };
 
-void signal_handler(int) {
-    running = 0;
-}
-
 class TKeyValueStorage {
 public:
     explicit TKeyValueStorage() {
@@ -359,6 +381,10 @@ private:
     FILE *f;
     TConcurrentHashMap Map;
 };
+
+void signal_handler(int) {
+    running = 0;
+}
 
 int main(int argc, const char **argv) {
     signal(SIGINT, signal_handler);
