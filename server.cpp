@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <csignal>
+#include <cerrno>
 #include <sstream>
 #include <string>
 #include <fstream>
@@ -101,6 +102,11 @@ namespace {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+    SocketStatePtr invalid_state()
+    {
+        return std::make_shared<SocketState>();
+    }
+
     SocketStatePtr accept_connection(
             int socketfd,
             struct epoll_event &event,
@@ -112,8 +118,8 @@ namespace {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 return nullptr;
             } else {
-                LOG_ERROR("accept failed");
-                return nullptr;
+                LOG_PERROR("accept failed with error");
+                return invalid_state();
             }
         }
 
@@ -131,15 +137,15 @@ namespace {
         }
 
         if (!make_socket_nonblocking(infd)) {
-            LOG_ERROR("make_socket_nonblocking failed");
-            return nullptr;
+            LOG_PERROR("make_socket_nonblocking failed");
+            return invalid_state();
         }
 
         event.data.fd = infd;
         event.events = EPOLLIN | EPOLLOUT | EPOLLET;
         if (epoll_ctl(epollfd, EPOLL_CTL_ADD, infd, &event) == -1) {
-            LOG_ERROR("epoll_ctl failed");
-            return nullptr;
+            LOG_PERROR("epoll_ctl failed");
+            return invalid_state();
         }
 
         auto state = std::make_shared<SocketState>();
@@ -598,14 +604,16 @@ int main(int argc, const char **argv) {
                 continue;
             }
 
+            bool closed = false;
             if (events[i].events & EPOLLIN) {
                 auto state = states.at(fd);
                 if (!process_input(*state, handler)) {
                     finalize(fd);
+                    closed = true;
                 }
             }
 
-            if (events[i].events & EPOLLOUT) {
+            if (events[i].events & EPOLLOUT && !closed) {
                 auto state = states.at(fd);
                 if (!process_output(*state)) {
                     finalize(fd);

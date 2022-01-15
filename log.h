@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
@@ -80,7 +81,7 @@ public:
 ////////////////////////////////////////////////////////////////////////////////
 
 #define LOG_S(level, tag, message)                                             \
-    LOG(level, tag, (LogMessage() << message).extract());                      \
+    LOG(level, tag, (NLogging::LogMessage() << message).extract());            \
 // LOG_S
 
 #define LOG_DEBUG(message) LOG(EVerbosity::DEBUG, "DEBUG", message);
@@ -91,6 +92,7 @@ public:
 #define LOG_INFO_S(message) LOG_S(EVerbosity::INFO, "INFO", message);
 #define LOG_ERROR(message) LOG(EVerbosity::ERROR, "ERROR", message);
 #define LOG_ERROR_S(message) LOG_S(EVerbosity::ERROR, "ERROR", message);
+#define LOG_PERROR(message) LOG_ERROR_S(message << ": " << std::strerror(errno));
 
 #define VERIFY(condition, message)                                             \
     if (!(condition)) {                                                        \
