@@ -42,14 +42,14 @@ inline bool process_input(SocketState& state, const Handler& handler)
     bool success = true;
 
     char buf[512];
+    int total_read = 0;
     while (true) {
         auto len = std::min(sizeof(buf), state.current_message.to_read());
         auto count = recv(state.fd, buf, len, 0);
 
         if (count == -1) {
             if (errno != EAGAIN) {
-                // TODO proper logging
-                perror("send failed");
+                LOG_PERROR("recv failed");
 
                 success = false;
             }
@@ -58,6 +58,8 @@ inline bool process_input(SocketState& state, const Handler& handler)
         } else if (count == 0) {
             break;
         }
+
+        total_read += count;
 
         state.current_message.on_data(buf, count);
 
@@ -76,6 +78,11 @@ inline bool process_input(SocketState& state, const Handler& handler)
                 state.output_queue.push_back(std::move(response));
             }
         }
+    }
+
+    if (total_read == 0) {
+        LOG_INFO("conn closed");
+        success = false;
     }
 
     return success;
@@ -111,8 +118,7 @@ inline bool process_output(SocketState& state)
 
         if (count == -1) {
             if (errno != EAGAIN) {
-                // TODO proper logging
-                perror("send failed");
+                LOG_PERROR("send failed");
 
                 success = false;
             }
