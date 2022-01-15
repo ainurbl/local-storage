@@ -197,7 +197,8 @@ public:
         In.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId),
                 std::ios_base::in);
         if (In >> key >> value) {
-            Storage[key] = value;
+            Storage[0][key] = value;
+            Storage[1][key] = value;
         } else {
             CurrentOutId ^= 1;
             In.close();
@@ -205,14 +206,16 @@ public:
                     std::ios_base::in);
         }
         while (In >> key >> value) {
-            Storage[key] = value;
+            Storage[0][key] = value;
+            Storage[1][key] = value;
         }
         In.close();
 
         LogPutsIn.open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId) + "_log",
                 std::ios_base::in);
         while (LogPutsIn >> key >> value) {
-            Storage[key] = value;
+            Storage[0][key] = value;
+            Storage[1][key] = value;
         }
         LogPutsIn.close();
 
@@ -227,7 +230,7 @@ public:
         Out[CurrentOutId ^ 1].open(
                 fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(CurrentOutId ^ 1),
                 std::ios_base::out | std::ios_base::trunc);
-        for (auto &entry: Storage) {
+        for (auto &entry: Storage[CurrentOutId]) {
             Out[CurrentOutId] << entry.first << " " << entry.second << " ";
         }
 
@@ -235,13 +238,13 @@ public:
             while (running) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2000));
                 int32_t newOutId = CurrentOutId ^ 1;
-                for (auto &entry: Storage) {
-                    Out[newOutId] << entry.first << " " << entry.second << " ";
-                    Out[newOutId].flush();
-                }
-                Out[newOutId].close();
                 CurrentOutId = newOutId;
                 int32_t oldOutId = CurrentOutId ^ 1;
+
+                for (auto &entry: Storage[oldOutId]) {
+                    Out[CurrentOutId] << entry.first << " " << entry.second << " ";
+                    Out[CurrentOutId].flush();
+                }
 
                 LogOut[oldOutId].close();
                 LogOut[oldOutId].open(fileNameTemplate + std::to_string(PartitionId) + "_" + std::to_string(oldOutId) + "_log",
@@ -255,21 +258,23 @@ public:
     }
 
     void Put(const std::string &key, uint64_t value) {
-        Storage[key] = value;
+        Storage[CurrentOutId][key] = value;
         LogOut[CurrentOutId] << key << " " << value << "\n";
         LogOut[CurrentOutId].flush();
     }
 
     bool Find(const std::string &key, uint64_t *value) {
-        if (Storage.find(key) == Storage.end()) {
+        auto otherVersion = CurrentOutId ^ 1;
+        if (Storage[CurrentOutId].find(key) == Storage[CurrentOutId].end()
+            && Storage[otherVersion].find(key) == Storage[otherVersion].end()) {
             return false;
         }
-        *value = Storage[key];
+        if (Storage[CurrentOutId].count(key)) {
+            *value = Storage[CurrentOutId][key];
+        } else {
+            *value = Storage[otherVersion][key];
+        }
         return true;
-    }
-
-    uint64_t Size() {
-        return Storage.size();
     }
 
     void Close() {
@@ -284,7 +289,7 @@ public:
         Close();
     }
 private:
-    std::unordered_map <std::string, uint64_t> Storage;
+    std::unordered_map <std::string, uint64_t> Storage[2];
     std::ifstream In;
     std::ifstream LogPutsIn;
     std::ofstream Out[2];
@@ -300,7 +305,7 @@ public:
         uint64_t total = 0;
         for (int32_t i = 0; i < PARTITION_COUNT; ++i) {
             Maps[i].Init(MAP_NAME_TEMPLATE, i);
-            auto lastSize = Maps[i].Size();
+            auto lastSize = 0;
             total += lastSize;
             LOG_INFO(std::to_string(lastSize) + " elements got from cold start at shard_id=" + std::to_string(i));
         }
@@ -312,7 +317,7 @@ public:
         for (uint64_t i = 0; i < PARTITION_COUNT; ++i) {
             Maps[i].Flush();
             Maps[i].Close();
-            totalSize += Maps[i].Size();
+            totalSize += 0;
         }
         LOG_INFO("Before destructor: " + std::to_string(totalSize) + " elements");
     }
