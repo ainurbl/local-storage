@@ -21,3 +21,23 @@ message TGetResponse {
     uint64 request_id = 1;
     uint64 offset = 2;
 }
+
+message TInsertRequest {
+    uint64 request_id = 1;
+    string key = 2;
+    string val = 3;
+}
+
+message TInsertResponse {
+    uint64 request_id = 1;
+}
+
+message TGetInsertedRequest {
+    uint64 request_id = 1;
+    string key = 2;
+}
+
+message TGetInsertedResponse {
+    uint64 request_id = 1;
+    string value = 2;
+}
